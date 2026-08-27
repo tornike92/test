@@ -139,7 +139,7 @@ async function start() {
 
     for (const msg of messages) {
       try {
-        if (!msg?.message || msg.key.fromMe) continue;
+        if (!msg?.message) continue;
 
         const jid = msg.key.remoteJid;
         if (!jid || jid.endsWith("@g.us")) continue;
@@ -147,12 +147,13 @@ async function start() {
         const text = extractText(msg.message);
         if (!text) continue;
 
-        if (
-          TRIGGER_PREFIX &&
-          !text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase())
-        ) {
-          continue;
-        }
+        const hasTrigger =
+          !TRIGGER_PREFIX ||
+          text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase());
+
+        // For normal incoming messages, only answer explicit !ai requests.
+        // For self-testing, allow your own message only when it also starts with !ai.
+        if (!hasTrigger) continue;
 
         const prompt = TRIGGER_PREFIX
           ? text.slice(TRIGGER_PREFIX.length).trim()
@@ -164,6 +165,8 @@ async function start() {
           });
           continue;
         }
+
+        console.log(`${msg.key.fromMe ? "Self-test" : "Incoming"} request: ${prompt.slice(0, 120)}`);
 
         await sock.sendPresenceUpdate("composing", jid);
         const answer = await askModel(prompt);
