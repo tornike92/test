@@ -13,6 +13,12 @@ const AUTH_DIR = process.env.AUTH_DIR || "./whatsapp-auth";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const QR_PAGE_TOKEN = process.env.QR_PAGE_TOKEN || "";
 const PORT = Number(process.env.PORT || 8080);
+const ALLOWED_NUMBERS = new Set(
+  (process.env.ALLOWED_NUMBERS || "")
+    .split(",")
+    .map((value) => value.replace(/\D/g, ""))
+    .filter(Boolean)
+);
 
 if (!OPENAI_API_KEY) {
   console.error("Missing OPENAI_API_KEY");
@@ -55,6 +61,14 @@ function extractText(message) {
     message?.videoMessage?.caption ||
     ""
   ).trim();
+}
+
+function numberFromJid(jid) {
+  return (jid.split("@")[0] || "").replace(/\D/g, "");
+}
+
+function isAllowedContact(jid) {
+  return ALLOWED_NUMBERS.has(numberFromJid(jid));
 }
 
 async function askModel(text) {
@@ -144,6 +158,10 @@ async function start() {
         const jid = msg.key.remoteJid;
         if (!jid || jid.endsWith("@g.us")) continue;
 
+        // Your own self-chat remains available for admin testing.
+        // Everyone else is ignored unless their phone number is in ALLOWED_NUMBERS.
+        if (!msg.key.fromMe && !isAllowedContact(jid)) continue;
+
         const text = extractText(msg.message);
         if (!text) continue;
 
@@ -151,8 +169,6 @@ async function start() {
           !TRIGGER_PREFIX ||
           text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase());
 
-        // For normal incoming messages, only answer explicit !ai requests.
-        // For self-testing, allow your own message only when it also starts with !ai.
         if (!hasTrigger) continue;
 
         const prompt = TRIGGER_PREFIX
@@ -166,7 +182,7 @@ async function start() {
           continue;
         }
 
-        console.log(`${msg.key.fromMe ? "Self-test" : "Incoming"} request: ${prompt.slice(0, 120)}`);
+        console.log(`${msg.key.fromMe ? "Self-test" : "Allowed contact"} request received`);
 
         await sock.sendPresenceUpdate("composing", jid);
         const answer = await askModel(prompt);
