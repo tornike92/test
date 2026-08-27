@@ -3,13 +3,16 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
-import qrcode from "qrcode-terminal";
+import QRCode from "qrcode";
 import pino from "pino";
+import http from "node:http";
 
 const MODEL = process.env.MODEL || "gpt-5-nano";
 const TRIGGER_PREFIX = process.env.TRIGGER_PREFIX ?? "!ai";
 const AUTH_DIR = process.env.AUTH_DIR || "./whatsapp-auth";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const QR_PAGE_TOKEN = process.env.QR_PAGE_TOKEN || "";
+const PORT = Number(process.env.PORT || 8080);
 
 if (!OPENAI_API_KEY) {
   console.error("Missing OPENAI_API_KEY");
@@ -17,6 +20,32 @@ if (!OPENAI_API_KEY) {
 }
 
 const logger = pino({ level: "warn" });
+let latestQrDataUrl = "";
+let connectionStatus = "starting";
+
+function renderPage(message, image = "") {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="3"><title>WhatsApp Link</title><style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f7f8;color:#111}.card{background:white;padding:28px;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.08);text-align:center;max-width:520px;width:calc(100% - 40px)}img{width:min(420px,90vw);height:auto}.status{font-size:18px;margin:8px 0 18px}.hint{color:#666;line-height:1.5}</style></head><body><div class="card"><h1>WhatsApp Bot</h1><div class="status">${message}</div>${image ? `<img src="${image}" alt="WhatsApp QR code">` : ""}<p class="hint">On your phone: WhatsApp → Settings → Linked Devices → Link a Device.</p></div></body></html>`;
+}
+
+http.createServer((req, res) => {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  if (QR_PAGE_TOKEN && url.searchParams.get("token") !== QR_PAGE_TOKEN) {
+    res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Forbidden");
+    return;
+  }
+
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  if (connectionStatus === "connected") {
+    res.end(renderPage("✅ WhatsApp connected. You can close this page."));
+  } else if (latestQrDataUrl) {
+    res.end(renderPage("Scan this QR code", latestQrDataUrl));
+  } else {
+    res.end(renderPage("Waiting for a fresh QR code…"));
+  }
+}).listen(PORT, "0.0.0.0", () => {
+  console.log(`QR web page listening on port ${PORT}`);
+});
 
 function extractText(message) {
   return (
@@ -74,11 +103,18 @@ async function start() {
 
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
     if (qr) {
-      console.log("\nScan this QR in WhatsApp → Settings → Linked Devices → Link a Device:\n");
-      qrcode.generate(qr, { small: true });
+      connectionStatus = "waiting_for_scan";
+      QRCode.toDataURL(qr, { width: 460, margin: 3 })
+        .then((dataUrl) => {
+          latestQrDataUrl = dataUrl;
+          console.log("Fresh WhatsApp QR available on the web page");
+        })
+        .catch((err) => console.error("QR generation error:", err));
     }
 
     if (connection === "open") {
+      connectionStatus = "connected";
+      latestQrDataUrl = "";
       console.log("✅ WhatsApp connected");
     }
 
@@ -92,6 +128,7 @@ async function start() {
         process.exit(1);
       }
 
+      connectionStatus = "reconnecting";
       console.log("Connection closed; reconnecting...");
       setTimeout(start, 2000);
     }
