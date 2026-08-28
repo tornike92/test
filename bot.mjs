@@ -63,12 +63,30 @@ function extractText(message) {
   ).trim();
 }
 
-function numberFromJid(jid) {
+function numberFromJid(jid = "") {
   return (jid.split("@")[0] || "").replace(/\D/g, "");
 }
 
-function isAllowedContact(jid) {
-  return ALLOWED_NUMBERS.has(numberFromJid(jid));
+function candidateNumbers(msg) {
+  return [
+    msg?.key?.remoteJid,
+    msg?.key?.remoteJidAlt,
+    msg?.key?.participant,
+    msg?.key?.participantAlt,
+  ]
+    .map(numberFromJid)
+    .filter(Boolean);
+}
+
+function isAllowedContact(msg) {
+  return candidateNumbers(msg).some((number) => ALLOWED_NUMBERS.has(number));
+}
+
+function isSelfChat(msg, sock) {
+  if (!msg?.key?.fromMe) return false;
+  const ownNumber = numberFromJid(sock?.user?.id || "");
+  if (!ownNumber) return false;
+  return candidateNumbers(msg).includes(ownNumber);
 }
 
 async function askModel(text) {
@@ -84,7 +102,7 @@ async function askModel(text) {
         {
           role: "system",
           content:
-            "You are a concise WhatsApp assistant. Reply naturally in the same language as the sender. Keep ordinary replies short and useful.",
+            "You are a concise WhatsApp assistant. Reply naturally in the same language as the sender. Keep ordinary replies short and useful. Do not claim to be the account owner; if asked who you are, say you are their AI assistant.",
         },
         { role: "user", content: text },
       ],
@@ -158,31 +176,39 @@ async function start() {
         const jid = msg.key.remoteJid;
         if (!jid || jid.endsWith("@g.us")) continue;
 
-        // Your own self-chat remains available for admin testing.
-        // Everyone else is ignored unless their phone number is in ALLOWED_NUMBERS.
-        if (!msg.key.fromMe && !isAllowedContact(jid)) continue;
+        const selfChat = isSelfChat(msg, sock);
+        const allowedIncoming = !msg.key.fromMe && isAllowedContact(msg);
+
+        // Ignore everyone except whitelisted incoming contacts and your own self-chat.
+        if (!allowedIncoming && !selfChat) continue;
 
         const text = extractText(msg.message);
         if (!text) continue;
 
-        const hasTrigger =
-          !TRIGGER_PREFIX ||
-          text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase());
+        let prompt = text;
 
-        if (!hasTrigger) continue;
-
-        const prompt = TRIGGER_PREFIX
-          ? text.slice(TRIGGER_PREFIX.length).trim()
-          : text;
-
-        if (!prompt) {
-          await sock.sendMessage(jid, {
-            text: `Usage: ${TRIGGER_PREFIX} your question`,
-          });
-          continue;
+        if (selfChat) {
+          // Your own self-chat remains explicit/admin-only.
+          if (
+            TRIGGER_PREFIX &&
+            !text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase())
+          ) {
+            continue;
+          }
+          prompt = TRIGGER_PREFIX
+            ? text.slice(TRIGGER_PREFIX.length).trim()
+            : text;
+        } else if (
+          TRIGGER_PREFIX &&
+          text.toLowerCase().startsWith(TRIGGER_PREFIX.toLowerCase())
+        ) {
+          // Allowed contacts no longer need !ai, but strip it if they happen to use it.
+          prompt = text.slice(TRIGGER_PREFIX.length).trim();
         }
 
-        console.log(`${msg.key.fromMe ? "Self-test" : "Allowed contact"} request received`);
+        if (!prompt) continue;
+
+        console.log(`${selfChat ? "Self-test" : "Allowed contact"} request received`);
 
         await sock.sendPresenceUpdate("composing", jid);
         const answer = await askModel(prompt);
