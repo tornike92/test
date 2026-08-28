@@ -67,19 +67,38 @@ function numberFromJid(jid = "") {
   return (jid.split("@")[0] || "").replace(/\D/g, "");
 }
 
-function candidateNumbers(msg) {
+function candidateJids(msg) {
   return [
     msg?.key?.remoteJid,
     msg?.key?.remoteJidAlt,
     msg?.key?.participant,
     msg?.key?.participantAlt,
-  ]
-    .map(numberFromJid)
-    .filter(Boolean);
+  ].filter(Boolean);
 }
 
-function isAllowedContact(msg) {
-  return candidateNumbers(msg).some((number) => ALLOWED_NUMBERS.has(number));
+function candidateNumbers(msg) {
+  return candidateJids(msg).map(numberFromJid).filter(Boolean);
+}
+
+async function isAllowedContact(msg, sock) {
+  if (candidateNumbers(msg).some((number) => ALLOWED_NUMBERS.has(number))) {
+    return true;
+  }
+
+  for (const jid of candidateJids(msg)) {
+    if (!jid.includes("@lid")) continue;
+
+    try {
+      const phoneJid = await sock.signalRepository?.lidMapping?.getPNForLID(jid);
+      if (phoneJid && ALLOWED_NUMBERS.has(numberFromJid(phoneJid))) {
+        return true;
+      }
+    } catch (err) {
+      console.warn("Could not resolve WhatsApp LID for allowlist");
+    }
+  }
+
+  return false;
 }
 
 function isSelfChat(msg, sock) {
@@ -177,7 +196,7 @@ async function start() {
         if (!jid || jid.endsWith("@g.us")) continue;
 
         const selfChat = isSelfChat(msg, sock);
-        const allowedIncoming = !msg.key.fromMe && isAllowedContact(msg);
+        const allowedIncoming = !msg.key.fromMe && await isAllowedContact(msg, sock);
 
         // Ignore everyone except whitelisted incoming contacts and your own self-chat.
         if (!allowedIncoming && !selfChat) continue;
